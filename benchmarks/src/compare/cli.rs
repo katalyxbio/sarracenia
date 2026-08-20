@@ -20,8 +20,8 @@ pub struct CompareArgs {
     #[arg(short = 'd', long, default_value = "dorado")]
     pub dorado_exec_path: String,
 
-    #[arg(short = 'b', long, default_value = "barbell")]
-    pub barbell_exec_path: String,
+    #[arg(short = 's', long, default_value = "sarracenia")]
+    pub sarracenia_exec_path: String,
 
     #[arg(short = 'f', long, default_value = "flexiplex")]
     pub flexiplex_exec_path: String,

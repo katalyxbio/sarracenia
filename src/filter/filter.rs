@@ -1,8 +1,8 @@
-use crate::annotate::searcher::BarbellMatch;
+use crate::annotate::searcher::SarraceniaMatch;
 use crate::config::FilterConfig;
 use crate::filter::pattern::*;
 use crate::pattern_from_str;
-use crate::progress::progress::{FILTER_PROGRESS_SPECS, ProgressTracker};
+use crate::progress::progress::{FILTER_STAGE, ProgressTracker};
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
@@ -19,9 +19,9 @@ pub fn filter(
         let log_dir = Path::new(output_file)
             .parent()
             .unwrap_or_else(|| Path::new("."));
-        ProgressTracker::new_with_logging(&FILTER_PROGRESS_SPECS, "filter", log_dir)
+        ProgressTracker::new_with_logging(&FILTER_STAGE, "filter", log_dir)
     } else {
-        ProgressTracker::new(&FILTER_PROGRESS_SPECS)
+        ProgressTracker::new(&FILTER_STAGE)
     };
 
     let mut reader = csv::ReaderBuilder::new()
@@ -49,10 +49,10 @@ pub fn filter(
 
     // Process reads one group at a time
     let mut current_read_id: Option<String> = None;
-    let mut current_group: Vec<BarbellMatch> = Vec::new();
+    let mut current_group: Vec<SarraceniaMatch> = Vec::new();
 
     for result in reader.deserialize() {
-        let record: BarbellMatch = result?;
+        let record: SarraceniaMatch = result?;
 
         if let Some(read_id) = &current_read_id {
             if read_id != &record.read_id {
@@ -113,7 +113,7 @@ pub fn filter(
     }
 
     // Finish the progress bars with final counts
-    progress.finish("reads");
+    progress.finish();
 
     Ok(())
 }
@@ -153,7 +153,7 @@ pub fn filter_from_text_file(
     filter(annotated_file, output_file, dropped_out_file, &patterns, config)
 }
 
-fn check_filter_pass(annotations: &mut [BarbellMatch], patterns: &[Pattern]) -> bool {
+fn check_filter_pass(annotations: &mut [SarraceniaMatch], patterns: &[Pattern]) -> bool {
     // Track both the maximum number of matches and the cut positions
     let mut max_matches = 0;
     let mut best_cut_positions: Option<Vec<(usize, Cut)>> = None;

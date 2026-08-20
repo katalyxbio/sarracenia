@@ -20,7 +20,7 @@ pub struct Dorado {
     pub exec_path: String,
 }
 
-pub struct Barbell {
+pub struct Sarracenia {
     pub exec_path: String,
 }
 
@@ -211,11 +211,11 @@ impl Tool for Dorado {
     }
 }
 
-impl Tool for Barbell {
+impl Tool for Sarracenia {
     fn new(exec_path: &str) -> Self {
         // check if exec path exists
         if !Path::new(&exec_path).exists() {
-            panic!("Barbell executable not found at {exec_path}");
+            panic!("Sarracenia executable not found at {exec_path}");
         }
         Self {
             exec_path: exec_path.to_string(),
@@ -427,7 +427,7 @@ pub fn run_all_tools(
     threads: usize,
     extra_file: Option<String>,
     dorado_exec_path: &str,
-    barbell_exec_path: &str,
+    sarracenia_exec_path: &str,
     flexiplex_exec_path: &str,
 ) {
     // Initialize barcode sequences from provided file path
@@ -436,7 +436,7 @@ pub fn run_all_tools(
     // We create additional output folders for each of the tools
     let output_folder = format!("{output_folder}/all_tools");
     let dorado_output_folder = format!("{output_folder}/dorado");
-    let barbell_output_folder = format!("{output_folder}/barbell");
+    let sarracenia_output_folder = format!("{output_folder}/sarracenia");
     let flexiplex_output_folder = format!("{output_folder}/flexiplex");
     let annotation_output_folder = format!("{output_folder}/annotation");
     let trimmed_output_folder = format!("{output_folder}/trimmed");
@@ -480,19 +480,19 @@ pub fn run_all_tools(
         None,
     );
 
-    // -- Barbell --
-    println!("Running Barbell");
-    let barbell = Barbell::new(barbell_exec_path);
+    // -- Sarracenia --
+    println!("Running Sarracenia");
+    let sarracenia = Sarracenia::new(sarracenia_exec_path);
     let start_time = Instant::now();
-    // barbell
-    //     .run(fastq_file, &barbell_output_folder, threads, None)
+    // sarracenia
+    //     .run(fastq_file, &sarracenia_output_folder, threads, None)
     //     .unwrap();
-    let barbell_time = start_time.elapsed();
-    println!("Barbell time: {:?}", barbell_time);
-    barbell.parse_output(
-        &barbell_output_folder,
-        &format!("{annotation_output_folder}/barbell_parsed.tsv"),
-        &format!("{trimmed_output_folder}/barbell_trimmed.fasta"),
+    let sarracenia_time = start_time.elapsed();
+    println!("Sarracenia time: {:?}", sarracenia_time);
+    sarracenia.parse_output(
+        &sarracenia_output_folder,
+        &format!("{annotation_output_folder}/sarracenia_parsed.tsv"),
+        &format!("{trimmed_output_folder}/sarracenia_trimmed.fasta"),
         None,
     );
 
@@ -519,7 +519,7 @@ pub fn run_all_tools(
     println!("All done!");
     println!("Timings");
     // println!("Dorado: {:?}", dorado_time);
-    // println!("Barbell: {:?}", barbell_time);
+    // println!("Sarracenia: {:?}", sarracenia_time);
     // println!("Flexiplex: {:?}", flexiplex_time);
 }
 

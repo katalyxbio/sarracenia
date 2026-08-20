@@ -11,6 +11,10 @@ on:
   # Allow manual triggering.
   workflow_dispatch:
 
+env:
+  # Pin the packaging tool so a release is reproducible.
+  RATTLER_BUILD_VERSION: "0.74.0"
+
 jobs:
   build:
     strategy:
@@ -18,10 +22,16 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            conda_platform: linux-64
+            rattler_target: x86_64-unknown-linux-musl
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            conda_platform: linux-aarch64
+            rattler_target: aarch64-unknown-linux-musl
           - os: macos-14
             target: aarch64-apple-darwin
+            conda_platform: osx-arm64
+            rattler_target: aarch64-apple-darwin
 
     runs-on: ${{ matrix.os }}
 
@@ -36,7 +46,44 @@ jobs:
           cargo test --profile dist
 
           mkdir artifacts
-          mv target/dist/barbell artifacts/barbell-${{ matrix.target }}
+          mv target/dist/sarracenia artifacts/sarracenia-${{ matrix.target }}
+
+      - name: Install rattler-build
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 \
+            "https://github.com/prefix-dev/rattler-build/releases/download/v${RATTLER_BUILD_VERSION}/rattler-build-${{ matrix.rattler_target }}" \
+            -o "$RUNNER_TEMP/bin/rattler-build"
+          chmod +x "$RUNNER_TEMP/bin/rattler-build"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Build conda package
+        run: |
+          set -euo pipefail
+
+          # cargo-release keeps Cargo.toml in step with the tag, so the manifest is the
+          # single source of truth and this also works for a manual workflow_dispatch run.
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "Packaging sarracenia ${VERSION} for ${{ matrix.conda_platform }}"
+
+          # The recipe wraps the binary we just built rather than recompiling, so the
+          # conda package and the raw release asset are the same bytes.
+          mkdir -p conda/binary
+          cp "artifacts/sarracenia-${{ matrix.target }}" conda/binary/sarracenia
+          cp LICENSE conda/LICENSE
+          # -i.bak keeps this working on both GNU and BSD sed (macOS runner).
+          sed -i.bak "s/^  version: \".*\"/  version: \"${VERSION}\"/" conda/recipe.yaml
+          rm -f conda/recipe.yaml.bak
+
+          rattler-build build --recipe conda/recipe.yaml --output-dir conda-out
+
+          # rattler-build names the file after the variant hash; rename to the platform so
+          # the three release assets are told apart at a glance.
+          find conda-out -name '*.conda' -print0 | while IFS= read -r -d '' pkg; do
+            cp "$pkg" "artifacts/sarracenia-${VERSION}-${{ matrix.conda_platform }}.conda"
+          done
+
+          ls -la artifacts
 
       - uses: actions/upload-artifact@v4
         with:

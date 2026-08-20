@@ -1,5 +1,4 @@
-use crate::annotate::searcher::BarbellMatch;
-use colored::*;
+use crate::annotate::searcher::SarraceniaMatch;
 use sassy::Strand;
 use std::collections::HashMap;
 use std::error::Error;
@@ -12,7 +11,7 @@ fn bucket_position(pos: usize, bucket_size: usize) -> usize {
     (pos.saturating_sub(1) / bucket_size) * bucket_size
 }
 
-pub fn get_group_structure(group: &[BarbellMatch], bucket_size: usize) -> String {
+pub fn get_group_structure(group: &[SarraceniaMatch], bucket_size: usize) -> String {
     if group.is_empty() {
         return String::new();
     }
@@ -117,19 +116,6 @@ pub fn get_group_structure(group: &[BarbellMatch], bucket_size: usize) -> String
 }
 
 // Apply terminal colours when printing but keep underlying string clean
-fn colorize_pattern(input: &str) -> String {
-    let light_pink: CustomColor = CustomColor::new(255, 182, 193);
-    let dark_pink: CustomColor = CustomColor::new(231, 84, 128);
-    let light_blue: CustomColor = CustomColor::new(173, 216, 230);
-    let dark_blue: CustomColor = CustomColor::new(0, 0, 139);
-
-    input
-        .replace("Fflank", &"Fflank".custom_color(light_pink).to_string())
-        .replace("Ftag", &"Ftag".custom_color(dark_pink).to_string())
-        .replace("Rflank", &"Rflank".custom_color(light_blue).to_string())
-        .replace("Rtag", &"Rtag".custom_color(dark_blue).to_string())
-}
-
 pub fn inspect(
     annotated_file: &str,
     top_n: usize,
@@ -143,7 +129,7 @@ pub fn inspect(
 
     // Process reads one group at a time
     let mut current_read_id: Option<String> = None;
-    let mut current_group: Vec<BarbellMatch> = Vec::new();
+    let mut current_group: Vec<SarraceniaMatch> = Vec::new();
 
     // If we should write the pattern for each read open handle
     let mut read_pattern_out_handle: Option<BufWriter<File>> = None;
@@ -157,7 +143,7 @@ pub fn inspect(
     let mut pattern_count: HashMap<String, usize> = HashMap::new();
 
     for result in reader.deserialize() {
-        let record: BarbellMatch = result?;
+        let record: SarraceniaMatch = result?;
 
         if let Some(read_id) = &current_read_id {
             if *read_id != record.read_id.clone() {
@@ -197,9 +183,8 @@ pub fn inspect(
     pattern_count_vec.sort_by(|a, b| b.1.cmp(&a.1));
 
     for (i, (pattern, count)) in pattern_count_vec.iter().take(top_n).enumerate() {
-        let colored = colorize_pattern(pattern);
         println!("\tPattern {}: {} occurrences", i + 1, count);
-        println!("\t\t{colored}");
+        println!("\t\t{pattern}");
     }
 
     println!("Showed {} / {} patterns", top_n, pattern_count_vec.len());

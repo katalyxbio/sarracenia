@@ -1,99 +1,162 @@
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Copy)]
-pub(crate) struct ProgressSpec {
-    pub prefix: &'static str,
-    pub color: &'static str,
-    pub tick_ms: u64,
+/// Suppresses every informational and progress line (`--quiet`). Errors are still
+/// reported.
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(quiet, Ordering::SeqCst);
 }
 
-pub(crate) const ANNOTATION_PROGRESS_SPECS: [ProgressSpec; 3] = [
-    ProgressSpec {
-        prefix: "Total:",
-        color: "cyan",
-        tick_ms: 100,
-    },
-    ProgressSpec {
-        prefix: "Kept:",
-        color: "green",
-        tick_ms: 120,
-    },
-    ProgressSpec {
-        prefix: "Dropped:",
-        color: "red",
-        tick_ms: 140,
-    },
-];
+pub fn is_quiet() -> bool {
+    QUIET.load(Ordering::SeqCst)
+}
 
-pub(crate) const FILTER_PROGRESS_SPECS: [ProgressSpec; 3] = [
-    ProgressSpec {
-        prefix: "Total:",
-        color: "cyan",
-        tick_ms: 100,
-    },
-    ProgressSpec {
-        prefix: "Kept:",
-        color: "green",
-        tick_ms: 120,
-    },
-    ProgressSpec {
-        prefix: "Dropped:",
-        color: "red",
-        tick_ms: 140,
-    },
-];
+/// Print one informational line to stdout, unless `--quiet` is set.
+pub fn info(line: impl std::fmt::Display) {
+    if !is_quiet() {
+        println!("{line}");
+    }
+}
 
-pub(crate) const TRIM_PROGRESS_SPECS: [ProgressSpec; 4] = [
-    ProgressSpec {
-        prefix: "Total:",
-        color: "cyan",
-        tick_ms: 100,
-    },
-    ProgressSpec {
-        prefix: "Kept:",
-        color: "green",
-        tick_ms: 120,
-    },
-    ProgressSpec {
-        prefix: "Kept split:",
-        color: "green",
-        tick_ms: 140,
-    },
-    ProgressSpec {
-        prefix: "Failed:",
-        color: "red",
-        tick_ms: 160,
-    },
-];
+/// How often the progress line is redrawn. On a terminal it is rewritten in place, so
+/// it can be fast; piped into a file or CI log every redraw is a new line, so it is
+/// slow enough that a long run leaves a handful of lines rather than thousands.
+const TTY_REDRAW_MS: u64 = 100;
+const PIPE_REDRAW_MS: u64 = 10_000;
 
-fn create_spinner_bar(multi_progress: &MultiProgress, spec: ProgressSpec) -> ProgressBar {
-    let bar = multi_progress.add(ProgressBar::new_spinner());
-    let template = format!(
-        "{{spinner:.{color}}} {{prefix:.bold.white:<8}} {{msg:.bold.{color}:>6}} {{elapsed:.dim}}",
-        color = spec.color
-    );
-    bar.set_style(
-        ProgressStyle::with_template(&template)
-            .unwrap()
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-    );
-    bar.enable_steady_tick(Duration::from_millis(spec.tick_ms));
-    bar.set_prefix(spec.prefix.to_string());
-    bar
+/// Column the counters start at, so stage names line up across stages.
+const NAME_WIDTH: usize = 12;
+
+/// One stage's progress line. `metrics[0]` is always the running total (rendered as
+/// `<total> <unit>`); the rest are rendered as `| <name> <count>`.
+pub(crate) struct StageSpec {
+    pub name: &'static str,
+    pub unit: &'static str,
+    pub metrics: &'static [&'static str],
+}
+
+pub(crate) const ANNOTATE_STAGE: StageSpec = StageSpec {
+    name: "Annotating",
+    unit: "reads",
+    metrics: &["total", "kept", "dropped"],
+};
+
+pub(crate) const FILTER_STAGE: StageSpec = StageSpec {
+    name: "Filtering",
+    unit: "reads",
+    metrics: &["total", "kept", "dropped"],
+};
+
+pub(crate) const QC_STAGE: StageSpec = StageSpec {
+    name: "QC",
+    unit: "reads",
+    metrics: &["total", "kept", "dropped"],
+};
+
+pub(crate) const TRIM_STAGE: StageSpec = StageSpec {
+    name: "Trimming",
+    unit: "reads",
+    metrics: &["total", "kept", "kept split", "failed"],
+};
+
+/// `"kept split"` -> `"Kept split:"`. Keeps the `--verbose` log file's metric column
+/// in the format it has always had.
+fn log_label(metric: &str) -> String {
+    let mut chars = metric.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}:", first.to_ascii_uppercase(), chars.as_str()),
+        None => ":".to_string(),
+    }
+}
+
+/// Draws the single progress line for a stage, either rewriting it in place (terminal)
+/// or appending it (anything else).
+struct Renderer {
+    tty: bool,
+    redraw_ms: u64,
+    start: Instant,
+    last_draw_ms: AtomicU64,
+    /// Width of the line currently sitting on the terminal, so it can be blanked out
+    /// before a shorter line replaces it.
+    on_screen: Mutex<usize>,
+}
+
+impl Renderer {
+    fn new() -> Self {
+        let tty = std::io::stderr().is_terminal();
+        Self {
+            tty,
+            redraw_ms: if tty { TTY_REDRAW_MS } else { PIPE_REDRAW_MS },
+            start: Instant::now(),
+            last_draw_ms: AtomicU64::new(0),
+            on_screen: Mutex::new(0),
+        }
+    }
+
+    /// True at most once per redraw interval, for exactly one caller — workers call
+    /// `refresh` concurrently and must not all draw the same line.
+    fn due(&self) -> bool {
+        let now = self.start.elapsed().as_millis() as u64;
+        let last = self.last_draw_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < self.redraw_ms {
+            return false;
+        }
+        self.last_draw_ms
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    fn draw(&self, line: &str, last: bool) {
+        let mut on_screen = self
+            .on_screen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut err = std::io::stderr().lock();
+
+        if self.tty {
+            let blank = on_screen.saturating_sub(line.len());
+            let _ = write!(err, "\r{line}{:blank$}", "");
+            if last {
+                let _ = writeln!(err);
+                *on_screen = 0;
+            } else {
+                *on_screen = line.len();
+            }
+        } else {
+            let _ = writeln!(err, "{line}");
+            *on_screen = 0;
+        }
+        let _ = err.flush();
+    }
+
+    /// Blank the in-place line so a message can be printed without landing on top of it.
+    fn erase(&self) {
+        let mut on_screen = self
+            .on_screen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.tty && *on_screen > 0 {
+            let mut err = std::io::stderr().lock();
+            let _ = write!(err, "\r{:width$}\r", "", width = *on_screen);
+            let _ = err.flush();
+        }
+        *on_screen = 0;
+    }
 }
 
 pub(crate) struct ProgressTracker {
-    bars: Vec<ProgressBar>,
+    spec: &'static StageSpec,
     counts: Vec<AtomicUsize>,
-    specs: Vec<ProgressSpec>,
     error_msg: Mutex<Option<String>>,
     log: Option<ProgressLog>,
+    /// `None` under `--quiet`, which is what makes every draw call a no-op.
+    renderer: Option<Renderer>,
 }
 
 struct ProgressLog {
@@ -102,7 +165,7 @@ struct ProgressLog {
 }
 
 impl ProgressLog {
-    fn write(&self, counts: &[AtomicUsize], specs: &[ProgressSpec]) -> Result<(), String> {
+    fn write(&self, counts: &[AtomicUsize], spec: &StageSpec) -> Result<(), String> {
         let file = File::create(&self.path)
             .map_err(|e| format!("Failed to create log file '{}': {e}", self.path.display()))?;
 
@@ -110,12 +173,12 @@ impl ProgressLog {
         writeln!(w, "step\tmetric\tcount")
             .map_err(|_| format!("Failed to write progress log '{}'", self.path.display()))?;
 
-        for (count, spec) in counts.iter().zip(specs.iter()) {
+        for (count, metric) in counts.iter().zip(spec.metrics.iter()) {
             writeln!(
                 w,
                 "{}\t{}\t{}",
                 self.step,
-                spec.prefix,
+                log_label(metric),
                 count.load(Ordering::Relaxed)
             )
             .map_err(|_| format!("Failed to write progress log '{}'", self.path.display()))?;
@@ -127,12 +190,12 @@ impl ProgressLog {
 }
 
 impl ProgressTracker {
-    pub(crate) fn new(specs: &[ProgressSpec]) -> Self {
-        Self::new_inner(specs, None)
+    pub(crate) fn new(spec: &'static StageSpec) -> Self {
+        Self::new_inner(spec, None)
     }
 
     pub(crate) fn new_with_logging(
-        specs: &[ProgressSpec],
+        spec: &'static StageSpec,
         step: impl Into<String>,
         log_dir: impl AsRef<Path>,
     ) -> Self {
@@ -142,22 +205,16 @@ impl ProgressTracker {
             .unwrap_or_default()
             .as_millis();
         let path = log_dir.as_ref().join(format!("{step}.{ts}.log"));
-        Self::new_inner(specs, Some(ProgressLog { path, step }))
+        Self::new_inner(spec, Some(ProgressLog { path, step }))
     }
 
-    fn new_inner(specs: &[ProgressSpec], log: Option<ProgressLog>) -> Self {
-        let multi_progress = MultiProgress::new();
-        let bars = specs
-            .iter()
-            .map(|spec| create_spinner_bar(&multi_progress, *spec))
-            .collect();
-        let counts = specs.iter().map(|_| AtomicUsize::new(0)).collect();
+    fn new_inner(spec: &'static StageSpec, log: Option<ProgressLog>) -> Self {
         Self {
-            bars,
-            counts,
-            specs: specs.to_vec(),
+            spec,
+            counts: spec.metrics.iter().map(|_| AtomicUsize::new(0)).collect(),
             error_msg: Mutex::new(None),
             log,
+            renderer: (!is_quiet()).then(Renderer::new),
         }
     }
 
@@ -171,23 +228,48 @@ impl ProgressTracker {
         self.add(idx, 1);
     }
 
+    /// `Annotating  1250000 reads | kept 1200000 | dropped 50000`
+    fn line(&self, done: bool) -> String {
+        let mut line = format!("{:<NAME_WIDTH$}", self.spec.name);
+        if done {
+            line.push_str("done: ");
+        }
+        line.push_str(&format!(
+            "{} {}",
+            self.counts[0].load(Ordering::Relaxed),
+            self.spec.unit
+        ));
+        for (count, metric) in self.counts.iter().zip(self.spec.metrics.iter()).skip(1) {
+            line.push_str(&format!(" | {metric} {}", count.load(Ordering::Relaxed)));
+        }
+        line
+    }
+
+    /// Cheap enough to call per read: it costs a clock read and an atomic compare
+    /// until the redraw interval is actually due.
     #[inline(always)]
     pub(crate) fn refresh(&self) {
-        for (bar, count) in self.bars.iter().zip(self.counts.iter()) {
-            bar.set_message(count.load(Ordering::Relaxed).to_string());
+        if let Some(renderer) = &self.renderer
+            && renderer.due()
+        {
+            renderer.draw(&self.line(false), false);
         }
     }
 
     pub(crate) fn store_error(&self, msg: impl Into<String>) {
         let msg = msg.into();
-        self.bars[0].println(msg.clone());
+        self.print_error(msg.clone());
         if let Ok(mut err) = self.error_msg.lock() {
             *err = Some(msg);
         }
     }
 
+    /// Errors are reported even under `--quiet`.
     pub(crate) fn print_error(&self, msg: impl Into<String>) {
-        self.bars[0].println(msg.into());
+        if let Some(renderer) = &self.renderer {
+            renderer.erase();
+        }
+        eprintln!("{}", msg.into());
     }
 
     pub(crate) fn take_error(&self) -> Option<String> {
@@ -195,24 +277,59 @@ impl ProgressTracker {
     }
 
     pub(crate) fn clear(&self) {
-        for bar in &self.bars {
-            bar.finish_and_clear();
+        if let Some(renderer) = &self.renderer {
+            renderer.erase();
         }
     }
 
-    pub(crate) fn finish(&self, unit: &str) {
-        self.refresh();
-
+    pub(crate) fn finish(&self) {
         if let Some(log) = &self.log
-            && let Err(e) = log.write(&self.counts, &self.specs)
+            && let Err(e) = log.write(&self.counts, self.spec)
         {
             self.print_error(e);
         }
 
-        for (bar, count) in self.bars.iter().zip(self.counts.iter()) {
-            let count = count.load(Ordering::Relaxed);
-            // Prefix already shows the label (e.g. "Total:"), so don't repeat it in the message.
-            bar.finish_with_message(format!("{count} {unit}"));
+        if let Some(renderer) = &self.renderer {
+            renderer.draw(&self.line(true), true);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_log_label_matches_legacy_format() {
+        assert_eq!(log_label("total"), "Total:");
+        assert_eq!(log_label("kept split"), "Kept split:");
+        assert_eq!(log_label("failed"), "Failed:");
+    }
+
+    #[test]
+    fn test_line_layout() {
+        let tracker = ProgressTracker::new(&TRIM_STAGE);
+        tracker.add(0, 100);
+        tracker.add(1, 97);
+        tracker.add(2, 4);
+        tracker.add(3, 3);
+        assert_eq!(
+            tracker.line(false),
+            "Trimming    100 reads | kept 97 | kept split 4 | failed 3"
+        );
+        assert_eq!(
+            tracker.line(true),
+            "Trimming    done: 100 reads | kept 97 | kept split 4 | failed 3"
+        );
+    }
+
+    #[test]
+    fn test_quiet_disables_rendering() {
+        set_quiet(true);
+        let tracker = ProgressTracker::new(&QC_STAGE);
+        assert!(tracker.renderer.is_none());
+        set_quiet(false);
+        let tracker = ProgressTracker::new(&QC_STAGE);
+        assert!(tracker.renderer.is_some());
     }
 }

@@ -14,3 +14,8 @@ filter.txt
 /issue_test/*
 *.log
 *perf*
+# conda build staging (populated by .github/workflows/release.yaml)
+/conda/binary/
+/conda/LICENSE
+/conda-out/
+/artifacts/

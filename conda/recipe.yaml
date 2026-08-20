@@ -1,0 +1,49 @@
+# Conda recipe for Sarracenia.
+#
+# This recipe deliberately does NOT compile anything. The release workflow builds the
+# binary first (`cargo build --profile dist`, using the portable target-cpu settings from
+# .cargo/config-portable.toml), drops it in conda/binary/, and then calls rattler-build
+# here to wrap that exact artifact. Keeping the two steps separate means the conda package
+# and the raw binary attached to the release are byte-identical.
+#
+# Build it by hand with:
+#   mkdir -p conda/binary && cp target/release/sarracenia conda/binary/
+#   rattler-build build --recipe conda/recipe.yaml
+schema_version: 1
+
+context:
+  # Rewritten by .github/workflows/release.yaml from the release tag.
+  version: "0.0.0"
+
+package:
+  name: sarracenia
+  version: ${{ version }}
+
+build:
+  number: 0
+  script:
+    - mkdir -p "${PREFIX}/bin"
+    - cp "${RECIPE_DIR}/binary/sarracenia" "${PREFIX}/bin/sarracenia"
+    - chmod +x "${PREFIX}/bin/sarracenia"
+
+tests:
+  # Proves the packaged binary actually runs once installed, rather than only that the
+  # file was copied.
+  - script:
+      - sarracenia --version
+      - sarracenia kit --help
+
+about:
+  homepage: https://github.com/katalyxbio/sarracenia
+  repository: https://github.com/katalyxbio/sarracenia
+  license: PolyForm-Noncommercial-1.0.0
+  license_file: LICENSE
+  summary: Pattern-aware demultiplexing of Nanopore and PacBio sequencing reads
+  description: |
+    Sarracenia finds barcodes, adapters and primers in Nanopore and PacBio reads via
+    edit-distance matching, classifies the resulting patterns of matches, and trims and
+    sorts reads into per-sample FASTQ or BAM files. BAM input keeps MM/ML base
+    modification tags coordinate-correct across trimming and reverse complementing.
+
+    Licensed under the PolyForm Noncommercial License 1.0.0 - commercial use requires a
+    separate license.

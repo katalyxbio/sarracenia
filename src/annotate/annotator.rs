@@ -1,9 +1,10 @@
 use crate::annotate::barcodes::{BarcodeGroup, BarcodeType};
 use crate::annotate::edit_model::get_edit_cut_off;
-use crate::annotate::searcher::{BarbellMatch, Demuxer};
+use crate::annotate::searcher::{SarraceniaMatch, Demuxer};
 use crate::config::AnnotateConfig;
 use crate::io::io::open_fastq;
-use crate::progress::progress::{ANNOTATION_PROGRESS_SPECS, ProgressTracker};
+use crate::progress::progress::{ANNOTATE_STAGE, ProgressTracker, info, is_quiet};
+use crate::qc::qc::{QcFilter, print_qc_summary, reset_qc_counts};
 use anyhow::anyhow;
 use seq_io::fastq::{Error as FastqError, Record, RecordSet};
 use seq_io::parallel::{ParallelRecordsets, read_parallel};
@@ -11,6 +12,8 @@ use std::fmt::Display;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread_local;
+use rayon::prelude::*;
+use std::fs::File;
 
 fn wrap_error<T, E: Display>(result: Result<T, E>, context: &str) -> anyhow::Result<T> {
     result.map_err(|err| anyhow!("{context}: {err}"))
@@ -19,7 +22,7 @@ fn wrap_error<T, E: Display>(result: Result<T, E>, context: &str) -> anyhow::Res
 #[inline(always)]
 fn write_annotation_batch(
     writer: &Arc<Mutex<csv::Writer<std::fs::File>>>,
-    record_set_results: &[BarbellMatch],
+    record_set_results: &[SarraceniaMatch],
 ) -> anyhow::Result<()> {
     let mut writer = wrap_error(writer.lock(), "Annotation writer lock failed")?;
     for annotation in record_set_results {
@@ -33,7 +36,7 @@ fn write_annotation_batch(
 
 #[inline(always)]
 fn consume_record_sets(
-    record_sets: &mut ParallelRecordsets<RecordSet, FastqError, (Vec<BarbellMatch>, usize)>,
+    record_sets: &mut ParallelRecordsets<RecordSet, FastqError, (Vec<SarraceniaMatch>, usize)>,
     writer: &Arc<Mutex<csv::Writer<std::fs::File>>>,
     progress: &ProgressTracker,
 ) -> anyhow::Result<()> {
@@ -47,6 +50,128 @@ fn consume_record_sets(
         progress.add(2, n_records - found_count);
         progress.refresh();
     }
+    Ok(())
+}
+
+fn process_bam_batch(
+    records: &[noodles::bam::Record],
+    query_groups: &[BarcodeGroup],
+    writer: &Arc<Mutex<csv::Writer<std::fs::File>>>,
+    progress: &ProgressTracker,
+    alpha: f32,
+    verbose: bool,
+    min_score: f64,
+    min_score_diff: f64,
+    qc: &QcFilter,
+) -> anyhow::Result<()> {
+    let results: Vec<(Vec<SarraceniaMatch>, bool)> = records
+        .par_iter()
+        .map(|record| {
+            let read_id = match record.name() {
+                Some(name) => String::from_utf8_lossy(name).into_owned(),
+                None => return (Vec::new(), false),
+            };
+
+            let seq = record.sequence();
+
+            // Pre-alignment gate: skip the demuxer entirely for reads that fail QC.
+            if qc.is_active() {
+                let quality = qc.quality_of_phred(record.quality_scores().iter());
+                if !qc.passes(seq.len(), quality) {
+                    return (Vec::new(), false);
+                }
+            }
+
+            let mut seq_bytes = Vec::with_capacity(seq.len());
+            for base in seq.iter() {
+                seq_bytes.push(base.to_ascii_uppercase());
+            }
+
+            let mut demuxer = Demuxer::new(alpha, verbose, min_score, min_score_diff);
+            for query_group in query_groups {
+                demuxer.add_query_group(query_group.clone());
+            }
+
+            let matches = demuxer.demux(&read_id, &seq_bytes);
+            let found = !matches.is_empty();
+            (matches, found)
+        })
+        .collect();
+
+    let mut all_matches = Vec::new();
+    let mut found_count = 0;
+    for (matches, found) in results {
+        if found {
+            found_count += 1;
+            all_matches.extend(matches);
+        }
+    }
+
+    write_annotation_batch(writer, &all_matches)?;
+    let n_records = records.len();
+    progress.add(0, n_records);
+    progress.add(1, found_count);
+    progress.add(2, n_records - found_count);
+    progress.refresh();
+
+    Ok(())
+}
+
+fn annotate_bam(
+    read_file: &str,
+    out_file: &str,
+    query_groups: Vec<BarcodeGroup>,
+    config: &AnnotateConfig,
+) -> anyhow::Result<()> {
+    let alpha = config.alpha;
+    let verbose = config.verbose;
+    let min_score = config.min_score;
+    let min_score_diff = config.min_score_diff;
+
+    let mut reader = File::open(read_file)
+        .map(noodles::bam::io::Reader::new)
+        .map_err(|e| anyhow!("Failed to open BAM file '{read_file}': {e}"))?;
+
+    let _header = reader.read_header()?;
+
+    let writer = Arc::new(Mutex::new(
+        csv::WriterBuilder::new()
+            .delimiter(b'\t')
+            .from_path(out_file)
+            .map_err(|e| anyhow!("Failed to create annotation output file '{out_file}': {e}"))?,
+    ));
+
+    if !is_quiet() {
+        for (i, query_group) in query_groups.iter().enumerate() {
+            info(format!("{}: {}", query_group.barcode_type.as_str(), i));
+            query_group.display(5);
+        }
+    }
+
+    let progress = if config.verbose {
+        let log_dir = Path::new(out_file)
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        ProgressTracker::new_with_logging(&ANNOTATE_STAGE, "annotate", log_dir)
+    } else {
+        ProgressTracker::new(&ANNOTATE_STAGE)
+    };
+
+    let mut record_buffer = Vec::with_capacity(1000);
+    for result in reader.records() {
+        let record = result.map_err(|e| anyhow!("Failed to read BAM record: {e}"))?;
+        record_buffer.push(record);
+        if record_buffer.len() >= 1000 {
+            process_bam_batch(&record_buffer, &query_groups, &writer, &progress, alpha, verbose, min_score, min_score_diff, &config.qc)?;
+            record_buffer.clear();
+        }
+    }
+    if !record_buffer.is_empty() {
+        process_bam_batch(&record_buffer, &query_groups, &writer, &progress, alpha, verbose, min_score, min_score_diff, &config.qc)?;
+    }
+
+    progress.finish();
+    print_qc_summary(&config.qc);
     Ok(())
 }
 
@@ -67,7 +192,7 @@ pub fn annotate_with_files(
         } else {
             // Determine based on formula
             let edit_cut_off = get_edit_cut_off(query_group.get_effective_len());
-            println!("Auto edit flank cut off: {edit_cut_off}");
+            info(format!("Auto edit flank cut off: {edit_cut_off}"));
             query_group.set_flank_threshold(edit_cut_off);
         }
         query_groups.push(query_group);
@@ -93,9 +218,6 @@ pub fn annotate_with_groups(
     query_groups: Vec<BarcodeGroup>,
     config: &AnnotateConfig,
 ) -> anyhow::Result<()> {
-    // Hmm not sure: fixme: think about where flank error should be set
-    // Cannot mutate query_groups because it's not mutable (Vec<BarcodeGroup> is not mutable when passed by value and iterated by reference).
-    // Instead, create a new Vec with updated groups.
     let query_groups: Vec<BarcodeGroup> = query_groups
         .into_iter()
         .map(|mut query_group| {
@@ -104,7 +226,7 @@ pub fn annotate_with_groups(
             } else {
                 // Determine based on formula
                 let edit_cut_off = get_edit_cut_off(query_group.get_effective_len());
-                println!("Auto edit flank cut off: {edit_cut_off}");
+                info(format!("Auto edit flank cut off: {edit_cut_off}"));
                 query_group.set_flank_threshold(edit_cut_off);
             }
             query_group
@@ -119,11 +241,19 @@ pub fn annotate(
     query_groups: Vec<BarcodeGroup>,
     config: &AnnotateConfig,
 ) -> anyhow::Result<()> {
+    config.qc.validate()?;
+    reset_qc_counts();
+
+    if read_file.to_ascii_lowercase().ends_with(".bam") {
+        return annotate_bam(read_file, out_file, query_groups, config);
+    }
+
     let alpha = config.alpha;
     let n_threads = config.n_threads;
     let verbose = config.verbose;
     let min_score = config.min_score;
     let min_score_diff = config.min_score_diff;
+    let qc = config.qc;
 
     let reader = open_fastq(read_file);
     let writer = Arc::new(Mutex::new(
@@ -134,18 +264,20 @@ pub fn annotate(
     ));
 
     // Dispaly to user
-    for (i, query_group) in query_groups.iter().enumerate() {
-        println!("{}: {}", query_group.barcode_type.as_str(), i);
-        query_group.display(5);
+    if !is_quiet() {
+        for (i, query_group) in query_groups.iter().enumerate() {
+            info(format!("{}: {}", query_group.barcode_type.as_str(), i));
+            query_group.display(5);
+        }
     }
 
     let progress = if config.verbose {
         let log_dir = Path::new(out_file)
             .parent()
             .unwrap_or_else(|| Path::new("."));
-        ProgressTracker::new_with_logging(&ANNOTATION_PROGRESS_SPECS, "annotate", log_dir)
+        ProgressTracker::new_with_logging(&ANNOTATE_STAGE, "annotate", log_dir)
     } else {
-        ProgressTracker::new(&ANNOTATION_PROGRESS_SPECS)
+        ProgressTracker::new(&ANNOTATE_STAGE)
     };
 
     read_parallel(
@@ -172,8 +304,16 @@ pub fn annotate(
             let mut record_set_annotations = Vec::new();
             let mut found = 0;
             for record in record_set.into_iter() {
+                // Pre-alignment gate: skip the demuxer entirely for reads that fail QC.
+                if qc.is_active() {
+                    let quality = qc.quality_of_ascii(record.qual());
+                    if !qc.passes(record.seq().len(), quality) {
+                        continue;
+                    }
+                }
+
                 // Use the demuxer through thread-local storage
-                let matches: Vec<BarbellMatch> = DEMUXER.with(|cell| {
+                let matches: Vec<SarraceniaMatch> = DEMUXER.with(|cell| {
                     if let Some(ref mut demuxer) = *cell.borrow_mut() {
                         match record.id() {
                             Ok(read_id) => demuxer.demux(read_id, record.seq()),
@@ -203,7 +343,8 @@ pub fn annotate(
         return Err(anyhow!(msg));
     }
 
-    progress.finish("records");
+    progress.finish();
+    print_qc_summary(&qc);
 
     Ok(())
 }

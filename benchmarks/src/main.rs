@@ -44,7 +44,7 @@ fn main() {
                 args.threads,
                 Some(args.extra_file),
                 &args.dorado_exec_path,
-                &args.barbell_exec_path,
+                &args.sarracenia_exec_path,
                 &args.flexiplex_exec_path,
             );
         }

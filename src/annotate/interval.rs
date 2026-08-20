@@ -1,10 +1,10 @@
 use crate::annotate::barcodes::BarcodeType;
-use crate::annotate::searcher::BarbellMatch;
+use crate::annotate::searcher::SarraceniaMatch;
 
 pub fn collapse_overlapping_matches(
-    matches: &[BarbellMatch],
+    matches: &[SarraceniaMatch],
     filter_overlap: f32,
-) -> Vec<BarbellMatch> {
+) -> Vec<SarraceniaMatch> {
     if matches.is_empty() {
         return Vec::new();
     }
@@ -27,7 +27,7 @@ pub fn collapse_overlapping_matches(
     groups.into_iter().map(select_best_match).collect()
 }
 
-fn is_overlap(a: &BarbellMatch, b: &BarbellMatch, threshold: f32) -> bool {
+fn is_overlap(a: &SarraceniaMatch, b: &SarraceniaMatch, threshold: f32) -> bool {
     let start = a.read_start_flank.max(b.read_start_flank);
     let end = a.read_end_flank.min(b.read_end_flank);
 
@@ -41,7 +41,7 @@ fn is_overlap(a: &BarbellMatch, b: &BarbellMatch, threshold: f32) -> bool {
     (overlap as f32 / min_len as f32) >= threshold
 }
 
-fn select_best_match(group: Vec<BarbellMatch>) -> BarbellMatch {
+fn select_best_match(group: Vec<SarraceniaMatch>) -> SarraceniaMatch {
     let mut candidates: Vec<_> = group.into_iter().collect();
 
     // Priority order: 1) Ftag/Rtag (barcode matches), 2) Fflank/Rflank (flank matches)
@@ -105,8 +105,8 @@ mod tests {
         read_id: String,
         rel_dist_to_end: isize,
         cuts: Option<Vec<(Cut, usize)>>,
-    ) -> BarbellMatch {
-        BarbellMatch::new(
+    ) -> SarraceniaMatch {
+        SarraceniaMatch::new(
             read_start_bar,
             read_end_bar,
             read_start_flank,
@@ -131,7 +131,7 @@ mod tests {
         match_type: BarcodeType,
         barcode_cost: usize,
         label: &str,
-    ) -> BarbellMatch {
+    ) -> SarraceniaMatch {
         create_match(
             start,
             end,
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn test_empty_input() {
         // Test empty input
-        let matches: Vec<BarbellMatch> = Vec::new();
+        let matches: Vec<SarraceniaMatch> = Vec::new();
         let result = collapse_overlapping_matches(&matches, 0.5);
         assert_eq!(result.len(), 0);
     }

@@ -157,8 +157,8 @@ const DOUBLE_LABEL_CONFIG_KEEP_SINGLE: LabelConfig = LabelConfig {
     only_side: Some(LabelSide::Left),
 };
 
-// See when this makes sense, dont think any of their protocols has this (yet)
-#[allow(dead_code)]
+// Used by combinatorial kits (PacBio-M13), where the sample identity is the pair of
+// labels rather than either one on its own.
 const DOUBLE_LABEL_CONFIG_KEEP_DOUBLE: LabelConfig = LabelConfig {
     include_label: true,
     include_orientation: false,
@@ -234,6 +234,98 @@ static DOUBLE_LABEL_PATTERNS_MAXIMIZE: LazyLock<Vec<Pattern>> = LazyLock::new(||
         ),
     ]
 });
+
+/*
+    PacBio indexed SMRTbell plates (96A-96D). One barcode set, but the adapters are
+    symmetric, so a full-length read carries the same barcode at both ends with the far
+    one reverse-complemented. That layout is what SINGLE_LABEL_PATTERNS_* cannot express
+    (they only ever allow `fw` at the right), so these plates get their own set.
+*/
+static PACBIO_96_PATTERNS_SAFE: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
+    vec![
+        // Barcode only at the start of the read
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]"),
+        // Symmetric SMRTbell: same barcode both ends, far one reverse-complemented
+        pattern_from_str!("Ftag[fw, ?1, @left(0..250), >>]__Ftag[<<, rc, ?1, @right(0..250)]"),
+    ]
+});
+
+static PACBIO_96_PATTERNS_MAXIMIZE: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
+    vec![
+        // From safe
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]"),
+        pattern_from_str!("Ftag[fw, ?1, @left(0..250), >>]__Ftag[<<, rc, ?1, @right(0..250)]"),
+        // Barcode only at the end of the read
+        pattern_from_str!("Ftag[<<, rc, *, @right(0..250)]"),
+        // Both ends but the labels disagree; assume the leading barcode is the right one
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]"),
+        // Trailing barcode not reverse-complemented
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Ftag[<<, fw, *, @right(0..250)]"),
+        // Two barcodes at the start (within-sample re-ligation)
+        pattern_from_str!("Ftag[fw, ?1, @left(0..250)]__Ftag[fw, ?1, @prev_left(0..250), >>]"),
+        pattern_from_str!("Ftag[fw, *, @left(0..250)]__Ftag[fw, *, @prev_left(0..250), >>]"),
+    ]
+});
+
+/*
+    PacBio barcoded M13 plate: a *combinatorial* kit. The forward primers and reverse
+    primers are two different barcode sets (Ftag and Rtag), and it is the (F, R) pair
+    that identifies a sample. Both barcodes are therefore required in every pattern —
+    a read carrying only one of them cannot be assigned to a sample, so accepting it
+    would silently merge samples.
+
+    Either strand may be sequenced, hence each layout appears twice:
+      forward   <F primer> insert <rc R primer>  ->  Ftag[fw, @left] .. Rtag[rc, @right]
+      reverse   <R primer> insert <rc F primer>  ->  Rtag[fw, @left] .. Ftag[rc, @right]
+*/
+static PACBIO_M13_PATTERNS_SAFE: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
+    vec![
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Rtag[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Rtag[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]"),
+    ]
+});
+
+static PACBIO_M13_PATTERNS_MAXIMIZE: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
+    vec![
+        // From safe
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Rtag[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Rtag[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]"),
+        // Same, but with a leftover primer of the same type in front of the real one
+        pattern_from_str!(
+            "Ftag[fw, *, @left(0..250)]__Ftag[fw, *, @prev_left(0..250), >>]__Rtag[<<, rc, *, @right(0..250)]"
+        ),
+        pattern_from_str!(
+            "Rtag[fw, *, @left(0..250)]__Rtag[fw, *, @prev_left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]"
+        ),
+        // One end degraded to a flank-only match: the pair is still resolvable because
+        // the flank tells us which primer sat there, so keep the read.
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]__Rflank[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Fflank[fw, *, @left(0..250), >>]__Rtag[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Rtag[fw, *, @left(0..250), >>]__Fflank[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Rflank[fw, *, @left(0..250), >>]__Ftag[<<, rc, *, @right(0..250)]"),
+        // Only one of the two primers was found at all. The pair — and so the sample —
+        // is unresolved, but the read is still recoverable, so keep it under a
+        // single-label name that is visibly distinct from the paired output files.
+        // Use the safe set instead if you only want fully resolved pairs.
+        pattern_from_str!("Ftag[fw, *, @left(0..250), >>]"),
+        pattern_from_str!("Rtag[fw, *, @left(0..250), >>]"),
+        pattern_from_str!("Ftag[<<, rc, *, @right(0..250)]"),
+        pattern_from_str!("Rtag[<<, rc, *, @right(0..250)]"),
+    ]
+});
+
+fn pacbio_96_patterns_safe() -> &'static [Pattern] {
+    &PACBIO_96_PATTERNS_SAFE
+}
+fn pacbio_96_patterns_maximize() -> &'static [Pattern] {
+    &PACBIO_96_PATTERNS_MAXIMIZE
+}
+fn pacbio_m13_patterns_safe() -> &'static [Pattern] {
+    &PACBIO_M13_PATTERNS_SAFE
+}
+fn pacbio_m13_patterns_maximize() -> &'static [Pattern] {
+    &PACBIO_M13_PATTERNS_MAXIMIZE
+}
 
 fn single_label_patterns_safe() -> &'static [Pattern] {
     &SINGLE_LABEL_PATTERNS_SAFE
@@ -632,6 +724,25 @@ const KIT_VMK4: KitConfig = KitConfig::new(
     TEMPLATES_VMK4,
 );
 
+// Combinatorial: the sample is the (forward, reverse) primer pair, so both labels have
+// to end up in the output name — keeping only the left one would merge the 24 reverse
+// barcodes that share a forward barcode into a single file.
+const KIT_PACBIO_M13: KitConfig = KitConfig::new(
+    "PacBio-M13",
+    DOUBLE_LABEL_CONFIG_KEEP_DOUBLE,
+    pacbio_m13_patterns_safe,
+    pacbio_m13_patterns_maximize,
+    &[],
+);
+
+const KIT_PACBIO_96: KitConfig = KitConfig::new(
+    "PacBio-96",
+    SINGLE_LABEL_CONFIG,
+    pacbio_96_patterns_safe,
+    pacbio_96_patterns_maximize,
+    &[],
+);
+
 pub fn get_kit_info(kit: &str) -> KitConfig {
     match kit {
         // 16S
@@ -692,6 +803,9 @@ pub fn get_kit_info(kit: &str) -> KitConfig {
         "VSK-VMK004" => KIT_VMK4,
         // MAB
         "SQK-MAB114-24" => KIT_MAB,
+        // PacBio Kits
+        "PacBio-M13" => KIT_PACBIO_M13,
+        "PacBio-96A" | "PacBio-96B" | "PacBio-96C" | "PacBio-96D" => KIT_PACBIO_96,
         // if name contains "." try to replace it and run again
         _ => {
             if kit.contains(".") {
@@ -1105,6 +1219,68 @@ pub fn lookup_barcode_seq(label: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pattern sets are parsed lazily at first use, so a typo in a pattern string
+    /// only surfaces when someone actually runs that kit. Force every set to build.
+    #[test]
+    fn test_all_kit_pattern_sets_parse() {
+        for kit in [
+            "SQK-RBK114-96",
+            "SQK-NBD114-96",
+            "SQK-16S114-24",
+            "SQK-MAB114-24",
+            "PacBio-M13",
+            "PacBio-96A",
+        ] {
+            let info = get_kit_info(kit);
+            assert!(
+                !(info.safe_patterns)().is_empty(),
+                "{kit} has no safe patterns"
+            );
+            assert!(
+                !(info.maximize_patterns)().is_empty(),
+                "{kit} has no maximize patterns"
+            );
+        }
+    }
+
+    /// PacBio-M13 is combinatorial: the sample is the (forward, reverse) primer pair,
+    /// so every safe pattern must pin down both, and the output name must keep both
+    /// labels rather than collapsing to the leftmost one.
+    #[test]
+    fn test_pacbio_m13_is_combinatorial() {
+        let info = get_kit_info("PacBio-M13");
+        assert_eq!(info.label_config.only_side, None);
+
+        let safe = (info.safe_patterns)();
+        assert_eq!(safe.len(), 2, "safe should only accept fully resolved pairs");
+        for pattern in safe {
+            let rendered = format!("{pattern:?}");
+            assert!(
+                rendered.contains("Ftag") && rendered.contains("Rtag"),
+                "safe pattern is missing one of the two primer types: {rendered}"
+            );
+        }
+    }
+
+    /// The SMRTbell adapters are symmetric, so the trailing barcode is reverse
+    /// complemented. That is exactly what the shared single-label set cannot match.
+    #[test]
+    fn test_pacbio_96_accepts_reverse_complemented_trailing_barcode() {
+        let info = get_kit_info("PacBio-96A");
+        let has_rc_at_right = |patterns: &[Pattern]| {
+            patterns.iter().any(|p| {
+                let rendered = format!("{p:?}");
+                rendered.contains("Rc") && rendered.contains("Right")
+            })
+        };
+        assert!(has_rc_at_right((info.safe_patterns)()));
+        assert!(has_rc_at_right((info.maximize_patterns)()));
+        // All four plates share one pattern set.
+        for plate in ["PacBio-96B", "PacBio-96C", "PacBio-96D"] {
+            assert!(has_rc_at_right((get_kit_info(plate).safe_patterns)()));
+        }
+    }
 
     #[test]
     fn test_get_barcodes_bc_1_to_12() {

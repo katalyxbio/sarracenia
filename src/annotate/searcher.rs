@@ -22,14 +22,14 @@ pub struct Demuxer {
     overhang_searcher: Searcher<Iupac>,
     regular_searcher: Searcher<Iupac>,
     // Buffers between demux calls
-    results_buf: Vec<BarbellMatch>,
+    results_buf: Vec<SarraceniaMatch>,
     best_per_pattern_buf: Vec<Option<Match>>,
     candidates_buf: Vec<(Match, usize)>, // (match, barcode index)
     scored_buf: Vec<(f64, f64, Match, usize)>, // (norm, raw, match, barcode index)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BarbellMatch {
+pub struct SarraceniaMatch {
     pub read_id: String,
     pub read_len: usize,
     pub rel_dist_to_end: isize,
@@ -141,7 +141,7 @@ where
     cuts_vec.map(Some)
 }
 
-impl BarbellMatch {
+impl SarraceniaMatch {
     pub fn new(
         read_start_bar: usize,
         read_end_bar: usize,
@@ -239,13 +239,13 @@ impl Demuxer {
     }
 
     fn push_flank_only_result(
-        results_buf: &mut Vec<BarbellMatch>,
+        results_buf: &mut Vec<SarraceniaMatch>,
         read_id: &str,
         read_len: usize,
         barcode_group: &BarcodeGroup,
         flank_match: &Match,
     ) {
-        results_buf.push(BarbellMatch::new(
+        results_buf.push(SarraceniaMatch::new(
             flank_match.text_start,
             flank_match.text_end,
             flank_match.text_start,
@@ -340,7 +340,7 @@ impl Demuxer {
         lodhi: &mut Lodhi,
         scored_buf: &mut Vec<(f64, f64, Match, usize)>,
         candidates_buf: &mut Vec<(Match, usize)>,
-        results_buf: &mut Vec<BarbellMatch>,
+        results_buf: &mut Vec<SarraceniaMatch>,
         read_id: &str,
         read_len: usize,
         barcode_group: &BarcodeGroup,
@@ -397,7 +397,7 @@ impl Demuxer {
 
         if is_valid_barcode_match {
             let top_barcode = &barcode_group.barcodes[scored_buf[0].3];
-            results_buf.push(BarbellMatch::new(
+            results_buf.push(SarraceniaMatch::new(
                 barcode_region_start + read_bar_start,
                 barcode_region_start + read_bar_end,
                 flank_match.text_start,
@@ -427,7 +427,7 @@ impl Demuxer {
 
     //fixme: would beneift from some more clean up
     /// Demultiplex read
-    pub fn demux(&mut self, read_id: &str, read: &[u8]) -> Vec<BarbellMatch> {
+    pub fn demux(&mut self, read_id: &str, read: &[u8]) -> Vec<SarraceniaMatch> {
         self.results_buf.clear();
 
         for (group_i, barcode_group) in self.queries.iter().enumerate() {

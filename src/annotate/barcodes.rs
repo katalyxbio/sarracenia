@@ -1,5 +1,4 @@
 use crate::kits::kits::*;
-use colored::Colorize;
 use needletail::{Sequence, parse_fastx_file};
 use sassy::profiles::{Iupac, Profile};
 use sassy::{EncodedPatterns, Searcher, Strand};
@@ -131,7 +130,7 @@ impl BarcodeGroup {
         if prefix_len == 0 && suffix_len == 0 {
             panic!("No prefix or suffix found, we can't search without having 'anchors'");
         }
-        if prefix_len == 0 || suffix_len == 0 {
+        if (prefix_len == 0 || suffix_len == 0) && !crate::progress::progress::is_quiet() {
             eprintln!(
                 "Your input only has a flank on one side, that works but we can better anchor your barcodes with a left and right flank"
             );
@@ -197,15 +196,18 @@ impl BarcodeGroup {
     }
 
     pub fn display(&self, n: usize) {
+        if crate::progress::progress::is_quiet() {
+            return;
+        }
         // This will show with padding, if we get the bar region
         let (mask_start, mask_end) = self.bar_region;
 
-        // Create colored string to show flank composition
-        // left flank & right_flank = blue, mask = cyan
-        let left_flank_str = String::from_utf8_lossy(self.flank_prefix.as_slice()).blue();
-        let right_flank_str = String::from_utf8_lossy(self.flank_suffix.as_slice()).blue();
+        // Flanks are printed verbatim; the barcode region is shown as a run of dashes
+        // so the barcodes below line up under it.
+        let left_flank_str = String::from_utf8_lossy(self.flank_prefix.as_slice());
+        let right_flank_str = String::from_utf8_lossy(self.flank_suffix.as_slice());
         let mask_size = mask_end - mask_start + 1;
-        let mask_str = "-".repeat(mask_size).to_string().bright_yellow();
+        let mask_str = "-".repeat(mask_size);
 
         println!("{left_flank_str}{mask_str}{right_flank_str}");
 
@@ -237,9 +239,9 @@ impl BarcodeGroup {
 
             println!(
                 "{}{}{}",
-                label_text.green(),
+                label_text,
                 pad_str,
-                String::from_utf8_lossy(just_bar_slice).bright_yellow()
+                String::from_utf8_lossy(just_bar_slice)
             );
         }
         if self.barcodes.len() > 2 {
@@ -247,8 +249,102 @@ impl BarcodeGroup {
         }
     }
 
+    /// Helper to parse compile-time embedded FASTA for PacBio
+    fn parse_embedded_fasta(content: &str) -> Vec<(String, String)> {
+        let mut records = Vec::new();
+        let mut current_id = String::new();
+        let mut current_seq = String::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with('>') {
+                if !current_id.is_empty() {
+                    records.push((current_id.clone(), current_seq.clone()));
+                    current_seq.clear();
+                }
+                current_id = line[1..].to_string();
+            } else if !line.is_empty() {
+                current_seq.push_str(line);
+            }
+        }
+        if !current_id.is_empty() {
+            records.push((current_id, current_seq));
+        }
+        records
+    }
+
+    /// Load PacBio barcode kits dynamically from embedded FASTA assets
+    pub fn new_from_pacbio_kit(kit: &str) -> Vec<Self> {
+        let mut groups = Vec::new();
+        match kit {
+            "PacBio-M13" => {
+                let embedded_m13 = include_str!("../../data/Barcoded_M13_Primer_Plate_102-135-500.fa");
+                let records = Self::parse_embedded_fasta(embedded_m13);
+                
+                let mut f_seqs = Vec::new();
+                let mut f_labels = Vec::new();
+                let mut r_seqs = Vec::new();
+                let mut r_labels = Vec::new();
+                
+                for (id, seq) in records {
+                    let seq_bytes = seq.to_ascii_uppercase().into_bytes();
+                    if id.ends_with("_F") {
+                        f_seqs.push(seq_bytes);
+                        f_labels.push(id);
+                    } else if id.ends_with("_R") {
+                        r_seqs.push(seq_bytes);
+                        r_labels.push(id);
+                    }
+                }
+                
+                if !f_seqs.is_empty() {
+                    groups.push(BarcodeGroup::new(f_seqs, f_labels, BarcodeType::Ftag));
+                }
+                if !r_seqs.is_empty() {
+                    groups.push(BarcodeGroup::new(r_seqs, r_labels, BarcodeType::Rtag));
+                }
+            }
+            "PacBio-96A" | "PacBio-96B" | "PacBio-96C" | "PacBio-96D" => {
+                let embedded_smrt = include_str!("../../data/SMRTbell adapter index.fa");
+                let records = Self::parse_embedded_fasta(embedded_smrt);
+                
+                let (start_num, end_num) = match kit {
+                    "PacBio-96A" => (2001, 2096),
+                    "PacBio-96B" => (2097, 2192),
+                    "PacBio-96C" => (2193, 2288),
+                    "PacBio-96D" => (2289, 2384),
+                    _ => (0, 0),
+                };
+                
+                let mut seqs = Vec::new();
+                let mut labels = Vec::new();
+                
+                for (id, seq) in records {
+                    let num_part: String = id.chars().filter(|c| c.is_ascii_digit()).collect();
+                    if let Ok(num) = num_part.parse::<usize>() {
+                        if num >= start_num && num <= end_num {
+                            seqs.push(seq.to_ascii_uppercase().into_bytes());
+                            labels.push(id);
+                        }
+                    }
+                }
+                
+                if !seqs.is_empty() {
+                    groups.push(BarcodeGroup::new(seqs, labels, BarcodeType::Ftag));
+                }
+            }
+            _ => {
+                panic!("Unknown PacBio kit: {kit}");
+            }
+        }
+        groups
+    }
+
     /// Create Barcodegroup based on Nanopore kitname
     pub fn new_from_kit(kit: &str, also_use_extended: bool) -> Vec<Self> {
+        if kit.starts_with("PacBio-") {
+            return Self::new_from_pacbio_kit(kit);
+        }
+
         // Get all kit info
         let kit_config = get_kit_info(kit);
 
@@ -257,9 +353,10 @@ impl BarcodeGroup {
         for tmpl in kit_config.templates {
             // Only add extended templates if users allowed it
             if tmpl.template_type == TemplateType::Extended && !also_use_extended {
-                println!("Skipping extended template {kit}");
+                crate::progress::progress::info(format!("Skipping extended template {kit}"));
                 continue;
             }
+
             let label_range = tmpl.barcodes;
             let labels = get_barcodes(label_range.from, label_range.to, label_range.use_12a);
             let mut query_seqs = Vec::new();

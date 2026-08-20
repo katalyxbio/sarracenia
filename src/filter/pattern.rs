@@ -1,5 +1,5 @@
 use crate::annotate::barcodes::BarcodeType;
-use crate::annotate::searcher::BarbellMatch;
+use crate::annotate::searcher::SarraceniaMatch;
 use sassy::Strand;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -93,7 +93,7 @@ impl fmt::Display for Cut {
     }
 }
 
-fn check_match_type_and_label(m: &BarbellMatch, pattern_element: &PatternElement) -> bool {
+fn check_match_type_and_label(m: &SarraceniaMatch, pattern_element: &PatternElement) -> bool {
     // First check if match types are exactly equal
     if m.match_type != pattern_element.match_type {
         return false;
@@ -125,7 +125,7 @@ fn check_match_type_and_label(m: &BarbellMatch, pattern_element: &PatternElement
 }
 
 fn check_placeholder(
-    m: &BarbellMatch,
+    m: &SarraceniaMatch,
     pattern_element: &PatternElement,
     matched_labels: &mut HashMap<usize, String>,
 ) -> bool {
@@ -143,12 +143,12 @@ fn check_placeholder(
     true
 }
 
-fn check_orientation(m: &BarbellMatch, pattern_element: &PatternElement) -> bool {
+fn check_orientation(m: &SarraceniaMatch, pattern_element: &PatternElement) -> bool {
     pattern_element.orientation.is_none() || pattern_element.orientation.as_ref() == Some(&m.strand)
 }
 
 fn check_relative_position(
-    m: &BarbellMatch,
+    m: &SarraceniaMatch,
     pattern_element: &PatternElement,
     prev_end: Option<isize>,
     seq_len: isize,
@@ -190,7 +190,7 @@ fn check_relative_position(
 }
 
 fn matches_pattern_element(
-    m: &BarbellMatch,
+    m: &SarraceniaMatch,
     pattern_element: &PatternElement,
     prev_end: Option<isize>,
     matched_labels: &mut HashMap<usize, String>,
@@ -202,7 +202,7 @@ fn matches_pattern_element(
         && check_relative_position(m, pattern_element, prev_end, seq_len as isize)
 }
 
-pub fn match_pattern(matches: &[BarbellMatch], pattern: &Pattern) -> (bool, Vec<(usize, Cut)>) {
+pub fn match_pattern(matches: &[SarraceniaMatch], pattern: &Pattern) -> (bool, Vec<(usize, Cut)>) {
     let mut prev_end: Option<isize> = None;
     let mut matched_labels: HashMap<usize, String> = HashMap::new();
     let mut current_match_idx = 0;
@@ -371,7 +371,7 @@ macro_rules! pattern_from_str {
 
         // Do basic verification
         if !basic_verify(&elements, $pattern) {
-            eprintln!("Seems we could not convert all your pattern elements to Barbell patterns, please compare your string to:");
+            eprintln!("Seems we could not convert all your pattern elements to Sarracenia patterns, please compare your string to:");
             for (i, el) in elements.iter().enumerate() {
                 eprintln!("  Element {}: {:#?}", i, el);
             }
@@ -433,7 +433,7 @@ mod tests {
         // let pattern = pattern_from_str!("Ftag[fw, *, @left(0-250)]");
         let pattern = pattern_from_str!("Ftag[fw, *, @left(0..250)]");
 
-        let mut matches = vec![BarbellMatch::new(
+        let mut matches = vec![SarraceniaMatch::new(
             0,   // read_start_bar
             100, // read_end_bar
             0,   // read_start_flank
@@ -472,7 +472,7 @@ mod tests {
     fn test_distance_to_right_end() {
         let pattern = pattern_from_str!("Ftag[fw, *, @right(0..250)]");
 
-        let mut matches = vec![BarbellMatch::new(
+        let mut matches = vec![SarraceniaMatch::new(
             0,   // read_start_bar
             100, // read_end_bar
             0,   // read_start_flank
@@ -514,7 +514,7 @@ mod tests {
         println!("Pattern: {:?}", pattern);
 
         let mut matches = vec![
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 0,   // read_start_bar
                 100, // read_end_bar
                 0,   // read_start_flank
@@ -531,7 +531,7 @@ mod tests {
                 0,
                 None,
             ),
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 100, // read_start_bar
                 200, // read_end_bar
                 100, // read_start_flank
@@ -583,7 +583,7 @@ mod tests {
             pattern_from_str!("Ftag[fw, ?1, @left(0..250)]__Rtag[fw, ?1, @right(0..250)]");
         println!("Pattern: {:?}", pattern);
         let mut matches = vec![
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 0,   // read_start_bar
                 100, // read_end_bar
                 0,   // read_start_flank
@@ -600,7 +600,7 @@ mod tests {
                 0,
                 None,
             ),
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 100, // read_start_bar
                 200, // read_end_bar
                 100, // read_start_flank
@@ -636,7 +636,7 @@ mod tests {
             pattern_from_str!("Ftag[fw, ?1, @left(0..250)]__Rtag[fw, ?2, @right(0..250)]");
         println!("Pattern: {:?}", pattern);
         let matches = vec![
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 0,   // read_start_bar
                 100, // read_end_bar
                 0,   // read_start_flank
@@ -653,7 +653,7 @@ mod tests {
                 0,
                 None,
             ),
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 100, // read_start_bar
                 200, // read_end_bar
                 100, // read_start_flank
@@ -684,7 +684,7 @@ mod tests {
         );
         println!("Pattern: {:?}", pattern);
         let matches = vec![
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 0,   // read_start_bar
                 100, // read_end_bar
                 0,   // read_start_flank
@@ -701,7 +701,7 @@ mod tests {
                 0,
                 None,
             ),
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 100, // read_start_bar
                 200, // read_end_bar
                 100, // read_start_flank
@@ -718,7 +718,7 @@ mod tests {
                 0,
                 None,
             ),
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 100, // read_start_bar
                 200, // read_end_bar
                 550, // read_start_flank
@@ -747,7 +747,7 @@ mod tests {
             pattern_from_str!("Ftag[fw, *, >>, @left(0..250)]__Fflank[fw, <<, @prev_left(5..100)]");
 
         let matches = vec![
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 0,  // read_start_bar
                 10, // read_end_bar
                 0,  // read_start_flank
@@ -764,7 +764,7 @@ mod tests {
                 0,
                 None,
             ),
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 15, // read_start_bar
                 20, // read_end_bar
                 15, // read_start_flank
@@ -801,7 +801,7 @@ mod tests {
         );
 
         let matches = vec![
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 0,  // read_start_bar
                 10, // read_end_bar
                 0,  // read_start_flank
@@ -818,7 +818,7 @@ mod tests {
                 0,
                 None,
             ),
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 15, // read_start_bar
                 20, // read_end_bar
                 15, // read_start_flank
@@ -855,7 +855,7 @@ mod tests {
         );
 
         let matches = vec![
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 0,  // read_start_bar
                 10, // read_end_bar
                 0,  // read_start_flank
@@ -872,7 +872,7 @@ mod tests {
                 0,
                 None,
             ),
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 15, // read_start_bar
                 20, // read_end_bar
                 15, // read_start_flank
@@ -889,7 +889,7 @@ mod tests {
                 0,
                 None,
             ),
-            BarbellMatch::new(
+            SarraceniaMatch::new(
                 30, // read_start_bar
                 40, // read_end_bar
                 30, // read_start_flank

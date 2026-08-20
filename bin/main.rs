@@ -1,16 +1,21 @@
-use barbell::annotate::annotator::*;
-use barbell::annotate::barcodes::BarcodeType;
-use barbell::config::{AnnotateConfig, FilterConfig, KitConfig, TrimConfig};
-use barbell::filter::filter::filter_from_text_file;
-use barbell::inspect::inspect;
-use barbell::kits::use_kit::demux_using_kit;
-use barbell::trim::trim::{LabelSide, trim_matches};
+use sarracenia::annotate::annotator::*;
+use sarracenia::annotate::barcodes::BarcodeType;
+use sarracenia::config::{AnnotateConfig, FilterConfig, KitConfig, QcConfig, TrimConfig};
+use sarracenia::filter::filter::filter_from_text_file;
+use sarracenia::inspect::inspect;
+use sarracenia::kits::use_kit::demux_using_kit;
+use sarracenia::progress::progress::{info, set_quiet};
+use sarracenia::qc::qc::{QcFilter, run_qc};
+use sarracenia::trim::trim::{LabelSide, trim_matches};
 use clap::{Parser, Subcommand};
-use colored::*;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// Only report errors; suppress progress and informational output
+    #[arg(long, global = true, default_value_t = false)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -59,9 +64,9 @@ enum UtilsCommands {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Annotate FASTQ files with barcode information
+    /// Annotate FASTQ/BAM files with barcode information
     Annotate {
-        /// Read FASTQ file (or FASTQ.gz; slower due to unzipping)
+        /// Read FASTQ/BAM file (or FASTQ.gz)
         #[arg(short = 'i', long)]
         input: String,
 
@@ -108,6 +113,18 @@ enum Commands {
         /// Edit cost beyond read boundaries
         #[arg(long = "alpha", default_value_t = 0.4)]
         alpha: f32,
+
+        /// Drop reads shorter than this many bases (applied before alignment)
+        #[arg(long = "min-length", value_name = "INT")]
+        min_length: Option<usize>,
+
+        /// Drop reads longer than this many bases (applied before alignment)
+        #[arg(long = "max-length", value_name = "INT")]
+        max_length: Option<usize>,
+
+        /// Drop reads with mean read quality below this Phred value (applied before alignment)
+        #[arg(long = "min-quality", value_name = "FLOAT")]
+        min_quality: Option<f64>,
     },
     /// Filter annotation files based on pattern
     Filter {
@@ -185,6 +202,18 @@ enum Commands {
         /// Write output FASTQ files as gzip-compressed (.fastq.gz)
         #[arg(long, default_value_t = false)]
         gzip: bool,
+
+        /// Drop trimmed reads shorter than this many bases (applied after trimming)
+        #[arg(long = "min-trimmed-length", value_name = "INT")]
+        min_trimmed_length: Option<usize>,
+
+        /// Drop trimmed reads longer than this many bases (applied after trimming)
+        #[arg(long = "max-trimmed-length", value_name = "INT")]
+        max_trimmed_length: Option<usize>,
+
+        /// Drop trimmed reads with mean quality below this Phred value (applied after trimming)
+        #[arg(long = "min-trimmed-quality", value_name = "FLOAT")]
+        min_trimmed_quality: Option<f64>,
     },
 
     /// View most common patterns in annotation
@@ -209,8 +238,16 @@ enum Commands {
     /// Run a preset
     Kit {
         /// Kit to use (e.g. SQK-RBK114-24)
-        #[arg(short = 'k', long)]
-        kit: String,
+        #[arg(short = 'k', long, required_unless_present = "auto_detect")]
+        kit: Option<String>,
+
+        /// Auto-detect the barcoding kit from input reads
+        #[arg(long, default_value_t = false)]
+        auto_detect: bool,
+
+        /// Minimum percentage of sampled reads (0.0 to 100.0) that the best candidate kit must match during auto-detection
+        #[arg(long = "auto-detect-threshold", default_value_t = 5.0)]
+        auto_detect_threshold: f64,
 
         /// Input FASTQ file (or FASTQ.gz; slower due to unzipping)
         #[arg(short = 'i', long)]
@@ -259,6 +296,66 @@ enum Commands {
         /// Write output FASTQ files as gzip-compressed (.fastq.gz)
         #[arg(long, default_value_t = false)]
         gzip: bool,
+
+        /// Drop reads shorter than this many bases (applied before alignment)
+        #[arg(long = "min-length", value_name = "INT")]
+        min_length: Option<usize>,
+
+        /// Drop reads longer than this many bases (applied before alignment)
+        #[arg(long = "max-length", value_name = "INT")]
+        max_length: Option<usize>,
+
+        /// Drop reads with mean read quality below this Phred value (applied before alignment)
+        #[arg(long = "min-quality", value_name = "FLOAT")]
+        min_quality: Option<f64>,
+
+        /// Drop trimmed reads shorter than this many bases (applied after trimming)
+        #[arg(long = "min-trimmed-length", value_name = "INT")]
+        min_trimmed_length: Option<usize>,
+
+        /// Drop trimmed reads longer than this many bases (applied after trimming)
+        #[arg(long = "max-trimmed-length", value_name = "INT")]
+        max_trimmed_length: Option<usize>,
+
+        /// Drop trimmed reads with mean quality below this Phred value (applied after trimming)
+        #[arg(long = "min-trimmed-quality", value_name = "FLOAT")]
+        min_trimmed_quality: Option<f64>,
+    },
+
+    /// Filter reads by length and mean quality, without any alignment
+    Qc {
+        /// Input FASTQ/BAM file (or FASTQ.gz)
+        #[arg(short = 'i', long)]
+        input: String,
+
+        /// Output file for reads that pass (same format as the input)
+        #[arg(short = 'o', long)]
+        output: String,
+
+        /// Also write reads that fail to this file
+        #[arg(long)]
+        dropped: Option<String>,
+
+        /// Drop reads shorter than this many bases
+        #[arg(long = "min-length", value_name = "INT")]
+        min_length: Option<usize>,
+
+        /// Drop reads longer than this many bases
+        #[arg(long = "max-length", value_name = "INT")]
+        max_length: Option<usize>,
+
+        /// Drop reads with mean read quality below this Phred value.
+        /// Quality is -10*log10(mean error probability), as used by Dorado/NanoFilt/chopper
+        #[arg(long = "min-quality", value_name = "FLOAT")]
+        min_quality: Option<f64>,
+
+        /// Write output FASTQ files as gzip-compressed (.fastq.gz)
+        #[arg(long, default_value_t = false)]
+        gzip: bool,
+
+        /// Writes log file (total, kept, dropped)
+        #[arg(long, default_value_t = false)]
+        verbose: bool,
     },
 }
 
@@ -266,9 +363,9 @@ fn main() {
     // Make sure that AVX2 is supported by the current CPU if it was used during compilation.
     ensure_simd::ensure_simd();
 
-    print_banner();
-
     let cli = Cli::parse();
+
+    set_quiet(cli.quiet);
 
     match &cli.command {
         Commands::Annotate {
@@ -284,8 +381,11 @@ fn main() {
             min_score_diff,
             use_extended,
             alpha,
+            min_length,
+            max_length,
+            min_quality,
         } => {
-            println!("{}", "Starting annotation...".green());
+            info("Starting annotation...");
             let annotate_config = AnnotateConfig {
                 max_flank_errors: *flank_max_errors,
                 alpha: *alpha,
@@ -294,12 +394,13 @@ fn main() {
                 min_score: *min_score,
                 min_score_diff: *min_score_diff,
                 use_extended: *use_extended,
+                qc: QcFilter::new(*min_length, *max_length, *min_quality),
             };
 
             if let Some(kit_name) = kit.as_ref() {
                 match annotate_with_kit(input, output, kit_name.as_str(), &annotate_config) {
-                    Ok(_) => println!("{}", "Annotation complete!".green()),
-                    Err(e) => println!("{} {}", "Error during processing:".red(), e),
+                    Ok(_) => info("Annotation complete!"),
+                    Err(e) => println!("Error during processing: {e}"),
                 }
                 return;
             }
@@ -335,8 +436,8 @@ fn main() {
                 &annotate_config,
             ) {
                 // Convert fractions to raw scores
-                Ok(_) => println!("{}", "Annotation complete!".green()),
-                Err(e) => println!("{} {}", "Error during processing:".red(), e),
+                Ok(_) => info("Annotation complete!"),
+                Err(e) => println!("Error during processing: {e}"),
             }
         }
 
@@ -347,12 +448,12 @@ fn main() {
             dropped,
             verbose,
         } => {
-            println!("{}", "Starting filtering...".green());
+            info("Starting filtering...");
             let filter_config = FilterConfig { verbose: *verbose };
 
             match filter_from_text_file(input, file, output, dropped.as_deref(), &filter_config) {
-                Ok(_) => println!("{}", "Filtering successful!".green()),
-                Err(e) => println!("{} {}", "Filtering failed:".red(), e),
+                Ok(_) => info("Filtering successful!"),
+                Err(e) => println!("Filtering failed: {e}"),
             }
         }
 
@@ -370,8 +471,11 @@ fn main() {
             flip,
             verbose,
             gzip,
+            min_trimmed_length,
+            max_trimmed_length,
+            min_trimmed_quality,
         } => {
-            println!("{}", "Starting trimming...".green());
+            info("Starting trimming...");
             let trim_config = TrimConfig {
                 add_labels: !no_label,
                 add_orientation: !no_orientation,
@@ -384,10 +488,15 @@ fn main() {
                 flip: *flip,
                 verbose: *verbose,
                 gzip: *gzip,
+                qc: QcFilter::new(
+                    *min_trimmed_length,
+                    *max_trimmed_length,
+                    *min_trimmed_quality,
+                ),
             };
             match trim_matches(input, reads, output, &trim_config) {
-                Ok(_) => println!("{}", "Trimming complete!".green()),
-                Err(e) => println!("{} {}", "Trimming failed:".red(), e),
+                Ok(_) => info("Trimming complete!"),
+                Err(e) => println!("Trimming failed: {e}"),
             }
         }
 
@@ -397,16 +506,18 @@ fn main() {
             read_pattern_out,
             bucket_size,
         } => {
-            println!("{}", "Inspecting...".green());
+            info("Inspecting...");
 
             match inspect::inspect(input, *top_n, read_pattern_out.clone(), *bucket_size) {
-                Ok(_) => println!("{}", "Inspection complete!".green()),
-                Err(e) => println!("{} {}", "Inspection failed:".red(), e),
+                Ok(_) => info("Inspection complete!"),
+                Err(e) => println!("Inspection failed: {e}"),
             }
         }
 
         Commands::Kit {
             kit,
+            auto_detect,
+            auto_detect_threshold,
             input,
             threads,
             output,
@@ -419,9 +530,27 @@ fn main() {
             use_extended,
             alpha,
             gzip,
+            min_length,
+            max_length,
+            min_quality,
+            min_trimmed_length,
+            max_trimmed_length,
+            min_trimmed_quality,
         } => {
+            let kit_name = if *auto_detect {
+                match sarracenia::kits::auto_detect::auto_detect_kit(input.as_str(), *auto_detect_threshold) {
+                    Ok(detected) => detected,
+                    Err(e) => {
+                        println!("Auto-detection failed: {e}");
+                        return;
+                    }
+                }
+            } else {
+                kit.clone().expect("Kit name is required unless auto-detect is enabled")
+            };
+
             let kit_config = KitConfig {
-                kit_name: kit.clone(),
+                kit_name,
                 threads: *threads,
                 output_folder: output.clone(),
                 maximize: *maximize,
@@ -433,30 +562,40 @@ fn main() {
                 use_extended: *use_extended,
                 alpha: *alpha,
                 gzip: *gzip,
+                qc: QcFilter::new(*min_length, *max_length, *min_quality),
+                trim_qc: QcFilter::new(
+                    *min_trimmed_length,
+                    *max_trimmed_length,
+                    *min_trimmed_quality,
+                ),
             };
 
             if let Err(e) = demux_using_kit(input.as_str(), &kit_config) {
-                println!("{} {}", "Demultiplexing failed:".red(), e);
+                println!("Demultiplexing failed: {e}");
+            }
+        }
+
+        Commands::Qc {
+            input,
+            output,
+            dropped,
+            min_length,
+            max_length,
+            min_quality,
+            gzip,
+            verbose,
+        } => {
+            info("Starting read QC...");
+            let qc_config = QcConfig {
+                filter: QcFilter::new(*min_length, *max_length, *min_quality),
+                gzip: *gzip,
+                verbose: *verbose,
+            };
+
+            match run_qc(input, output, dropped.as_deref(), &qc_config) {
+                Ok(_) => info("Read QC complete!"),
+                Err(e) => println!("Read QC failed: {e}"),
             }
         }
     }
-}
-
-fn print_banner() {
-    println!(
-        "{}",
-        r#"
-    ██████╗  █████╗ ██████╗ ██████╗ ███████╗██╗     ██╗     
-    ██╔══██╗██╔══██╗██╔══██╗██╔══██╗██╔════╝██║     ██║     
-    ██████╔╝███████║██████╔╝██████╔╝█████╗  ██║     ██║     
-    ██╔══██╗██╔══██║██╔══██╗██╔══██╗██╔══╝  ██║     ██║     
-    ██████╔╝██║  ██║██║  ██║██████╔╝███████╗███████╗███████╗
-    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚══════╝╚══════╝
-    "#
-        .blue()
-    );
-    println!(
-        "{}",
-        "        [===]------------------------------------------[===]        ".bright_yellow()
-    );
 }

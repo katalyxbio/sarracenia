@@ -1,30 +1,30 @@
 [package]
-name = "barbell"
+name = "sarracenia"
 version = "0.3.3"
 edition = "2024"
-license = "MIT"
-repository = "https://github.com/rickbeeloo/barbell"
+publish = false
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/katalyxbio/sarracenia"
 keywords = ["bioinformatics", "demultiplexing", "nanopore", "ONT"]
 description = "Extremely fast and accurate Nanopore demultiplexing"
 
 [lib]
-name = "barbell"
+name = "sarracenia"
 path = "src/lib.rs"
 
 [[bin]]
-name = "barbell"
+name = "sarracenia"
 path = "bin/main.rs"
 
 [dependencies]
+noodles = { version = "0.110.0", features = ["bam", "sam", "bgzf"] }
+bstr = "1.0"
 flate2 = "1.1"
 sassy = "0.2.1"
 pa-types = "1.2.0"
 seq_io = "0.3.4"
 rand = "0.8"
-spinners = "4.1.1"
-indicatif = "0.17.11"
 needletail = "0.6.3"
-colored = "2.0.0"
 rayon = "1.10.0"
 clap = { version = "4.5.40", features = ["derive"] }
 csv = "1.3"

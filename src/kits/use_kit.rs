@@ -3,9 +3,9 @@ use crate::config::{AnnotateConfig, FilterConfig, KitConfig, TrimConfig};
 use crate::filter::filter::filter;
 use crate::inspect::inspect::inspect;
 use crate::kits::kits::*;
-use crate::trim::trim::{LabelSide, trim_matches};
+use crate::trim::trim::trim_matches;
 use anyhow::anyhow;
-use colored::*;
+use crate::progress::progress::{info, is_quiet};
 use std::path::Path;
 
 pub fn demux_using_kit(fastq_file: &str, config: &KitConfig) -> anyhow::Result<()> {
@@ -19,18 +19,30 @@ pub fn demux_using_kit(fastq_file: &str, config: &KitConfig) -> anyhow::Result<(
     let kit_info = get_kit_info(kit_name);
 
     // Print some kit info
-    println!("\n{}", "Kit info".purple().bold());
-    println!("Kit name: {}", kit_info.name);
-    println!(
-        "Kit type: {}",
-        if config.maximize { "Maximize" } else { "Safe" }
-    );
-    for tmpl in kit_info.templates {
-        println!("Barcodes: {} - {}", tmpl.barcodes.from, tmpl.barcodes.to);
+    if !is_quiet() {
+        info("");
+        info("Kit info");
+        info(format!("Kit name: {}", kit_info.name));
+        info(format!(
+            "Kit type: {}",
+            if config.maximize { "Maximize" } else { "Safe" }
+        ));
+        for tmpl in kit_info.templates {
+            info(format!(
+                "Barcodes: {} - {}",
+                tmpl.barcodes.from, tmpl.barcodes.to
+            ));
+        }
+        if config.qc.is_active() {
+            info(format!("Read QC (pre-alignment): {}", config.qc.describe()));
+        }
+        if config.trim_qc.is_active() {
+            info(format!("Read QC (post-trim): {}", config.trim_qc.describe()));
+        }
     }
 
-    // If the default values are
-    println!("\n{}", "Annotating reads...".purple().bold());
+    info("");
+    info("Annotating reads...");
     let annotate_config = AnnotateConfig {
         max_flank_errors: config.max_flank_errors,
         alpha: config.alpha,
@@ -39,6 +51,7 @@ pub fn demux_using_kit(fastq_file: &str, config: &KitConfig) -> anyhow::Result<(
         min_score: config.min_score,
         min_score_diff: config.min_score_diff,
         use_extended: config.use_extended,
+        qc: config.qc,
     };
     annotate_with_kit(
         fastq_file,
@@ -48,21 +61,25 @@ pub fn demux_using_kit(fastq_file: &str, config: &KitConfig) -> anyhow::Result<(
     )?;
 
     // // After annotating we show inspect
-    println!("\n{}", "Top 10 most common patterns".purple().bold());
-    let pattern_per_read_out = format!("{output_folder}/pattern_per_read.tsv");
-    inspect(
-        format!("{output_folder}/annotation.tsv").as_str(),
-        10,
-        Some(pattern_per_read_out),
-        250,
-    )
-    .map_err(|e| anyhow!("{e}"))?;
-    println!(
-        "Want to see more patterns? Run: `barbell inspect {output_folder}/annotation.tsv -n 100`"
-    );
+    if !is_quiet() {
+        info("");
+        info("Top 10 most common patterns");
+        let pattern_per_read_out = format!("{output_folder}/pattern_per_read.tsv");
+        inspect(
+            format!("{output_folder}/annotation.tsv").as_str(),
+            10,
+            Some(pattern_per_read_out),
+            250,
+        )
+        .map_err(|e| anyhow!("{e}"))?;
+        info(format!(
+            "Want to see more patterns? Run: `sarracenia inspect {output_folder}/annotation.tsv -n 100`"
+        ));
+    }
 
     // Filter
-    println!("\n{}", "Filtering reads...".purple().bold());
+    info("");
+    info("Filtering reads...");
 
     let patterns = if config.maximize {
         (kit_info.maximize_patterns)()
@@ -83,19 +100,24 @@ pub fn demux_using_kit(fastq_file: &str, config: &KitConfig) -> anyhow::Result<(
     .map_err(|e| anyhow!("{e}"))?;
 
     // Trimming
-    println!("\n{}", "Trimming reads...".purple().bold());
+    info("");
+    info("Trimming reads...");
+    // Naming comes from the kit itself: most kits carry the same barcode at both ends
+    // and want just the left label, but a combinatorial kit needs both.
+    let label_config = kit_info.label_config;
     let trim_config = TrimConfig {
-        add_labels: true,
-        add_orientation: false,
-        add_flank: false,
-        sort_labels: false,
-        only_side: Some(LabelSide::Left),
+        add_labels: label_config.include_label,
+        add_orientation: label_config.include_orientation,
+        add_flank: label_config.include_flank,
+        sort_labels: label_config.sort_labels,
+        only_side: label_config.only_side,
         failed_trimmed_writer: config.failed_out.clone(),
         write_full_header: true,
         skip_trim: false,
         flip: false,
         verbose: config.verbose,
         gzip: config.gzip,
+        qc: config.trim_qc,
     };
     trim_matches(
         format!("{output_folder}/filtered.tsv").as_str(),
@@ -104,6 +126,7 @@ pub fn demux_using_kit(fastq_file: &str, config: &KitConfig) -> anyhow::Result<(
         &trim_config,
     )?;
 
-    println!("\n{}", "Done!".green().bold());
+    info("");
+    info("Done!");
     Ok(())
 }

@@ -1,3 +1,4 @@
+use crate::qc::qc::QcFilter;
 use crate::trim::trim::LabelSide;
 
 #[derive(Debug, Clone)]
@@ -9,6 +10,16 @@ pub struct AnnotateConfig {
     pub min_score: f64,
     pub min_score_diff: f64,
     pub use_extended: bool,
+    /// Length/quality gate applied to raw reads before any alignment work.
+    pub qc: QcFilter,
+}
+
+/// Standalone `sarracenia qc`: reads in, surviving reads out, no alignment.
+#[derive(Debug, Clone)]
+pub struct QcConfig {
+    pub filter: QcFilter,
+    pub gzip: bool,
+    pub verbose: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +40,9 @@ pub struct TrimConfig {
     pub flip: bool,
     pub verbose: bool,
     pub gzip: bool,
+    /// Length/quality gate applied to each fragment *after* trimming, just before it
+    /// is written out. Independent of `AnnotateConfig.qc`, which sees the raw read.
+    pub qc: QcFilter,
 }
 
 #[derive(Debug, Clone)]
@@ -45,5 +59,9 @@ pub struct KitConfig {
     pub use_extended: bool,
     pub alpha: f32,
     pub gzip: bool,
+    /// Length/quality gate applied to raw reads before any alignment work.
+    pub qc: QcFilter,
+    /// Length/quality gate applied to trimmed reads just before they are written.
+    pub trim_qc: QcFilter,
 }
 
