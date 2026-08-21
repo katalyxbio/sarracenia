@@ -37,7 +37,6 @@ If you have any issues or if something is unclear, just create an [issue](https:
 - [Output columns (annotate & filter)](#output-columns-annotate--filter)
 - [Patterns](#patterns)
   - [How to handle concat reads](#how-to-handle-concat-reads)
-- [Paper evals](#paper-evals)
 - [Notes & tips](#notes--tips)
 - [License](#license)
 
@@ -665,11 +664,6 @@ probably be enough. If you really want *all* the concat reads out you could use 
 per read. Then, get all unique patterns from there and use a regex or a python script to insert the `>>1` and `<<1`, you can just dump all of them 
 to `filters.txt` and use that in `sarracenia filter`. 
 
-
-
-
-## Paper evals
-Since this involves substantial amount of extra code we moved these to the [paper-evals](https://github.com/katalyxbio/sarracenia-evals) repo. All information on how to reproduce results and set up environments to do so can be found there. 
 
 
 
