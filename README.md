@@ -1,5 +1,7 @@
 # Sarracenia — Pattern aware demux
 
+![Sarracenia](resources/sarracenia.png)
+
 ## Why Sarracenia?
 
 - **>1000× fewer trimming errors** compared to Dorado.
