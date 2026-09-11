@@ -36,7 +36,7 @@ tests:
 about:
   homepage: https://github.com/katalyxbio/sarracenia
   repository: https://github.com/katalyxbio/sarracenia
-  license: PolyForm-Noncommercial-1.0.0
+  license: Apache-2.0
   license_file: LICENSE
   summary: Pattern-aware demultiplexing of Nanopore and PacBio sequencing reads
   description: |
@@ -45,5 +45,4 @@ about:
     sorts reads into per-sample FASTQ or BAM files. BAM input keeps MM/ML base
     modification tags coordinate-correct across trimming and reverse complementing.
 
-    Licensed under the PolyForm Noncommercial License 1.0.0 - commercial use requires a
-    separate license.
+    Licensed under the Apache License, Version 2.0.

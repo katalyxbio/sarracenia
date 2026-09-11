@@ -681,11 +681,7 @@ to `filters.txt` and use that in `sarracenia filter`.
 ## License
 
 Sarracenia is licensed under the
-[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0),
-see [LICENSE](LICENSE). You may use, modify and share it for **noncommercial purposes** —
-which the license defines as personal use, and use by charitable organizations, educational
-institutions, public research organizations, public safety or health organizations,
-environmental protection organizations, and government institutions.
+[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), see [LICENSE](LICENSE).
 
 Using Sarracenia for a commercial purpose requires a separate license from the copyright
 holder. Note that this is a source-available, not an open-source, license: it is not
