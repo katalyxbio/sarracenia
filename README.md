@@ -1,6 +1,6 @@
 # Sarracenia — Pattern aware demux
 
-![Sarracenia](resources/sarracenia.png)
+![Sarracenia](resources/sarracenia_logo.png)
 
 ## Why Sarracenia?
 
